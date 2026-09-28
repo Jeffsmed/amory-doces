@@ -144,6 +144,15 @@
   .stat-tile.warn .value{color:var(--warning-text);}
   .stat-tile.blue .value{color:var(--blue);}
   .stat-tile .sub{font-size:11.5px;color:var(--text-muted);margin-top:2px;}
+  .stat-tile.clicavel{cursor:pointer;}
+  .stat-tile.clicavel:active{opacity:.8;}
+
+  .historico-mensal-row{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:8px;padding:10px 4px;border-bottom:1px solid var(--border);align-items:center;}
+  .historico-mensal-row:last-child{border-bottom:none;}
+  .historico-mensal-row.header{font-size:11px;text-transform:uppercase;letter-spacing:.02em;color:var(--text-muted);border-bottom:1px solid var(--border);}
+  .historico-mensal-row .mes{font-weight:600;text-transform:capitalize;}
+  .historico-mensal-row .v-vendido{color:var(--blue);}
+  .historico-mensal-row .v-recebido{color:var(--good-text);}
 
   .tabs{display:flex;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:3px;margin-bottom:12px;}
   .tabs button{
@@ -443,6 +452,16 @@
     <textarea id="listaWaText" readonly></textarea>
     <button class="btn primary" id="btnCopiarListaWA" style="margin-bottom:8px;">📋 Copiar</button>
     <button class="btn secondary" id="btnFecharListaWA">Fechar</button>
+  </div>
+</div>
+
+<!-- Modal: histórico mensal (Total vendido / Recebido por mês) -->
+<div class="overlay hidden" id="modalHistoricoMensal">
+  <div class="sheet">
+    <h2>Histórico mensal</h2>
+    <p class="hint" style="margin:0 0 10px;">Total vendido e recebido de cada mês. "A receber" não entra aqui porque não reseta — ele é acumulado até ser pago.</p>
+    <div id="listaHistoricoMensal"></div>
+    <button class="btn secondary" id="btnFecharHistoricoMensal" style="margin-top:14px;">Fechar</button>
   </div>
 </div>
 
@@ -840,6 +859,17 @@
     var d = new Date(ts);
     return d.toLocaleDateString('pt-BR');
   }
+  function fmtMesAno(ano, mes){
+    var nomes = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+    return nomes[mes] + ' de ' + ano;
+  }
+  function mesAnoDaCompra(p){
+    var r = getRemessa(p.remessaId);
+    if(!r) return null;
+    var d = new Date(r.data);
+    var ano = d.getFullYear(), mes = d.getMonth();
+    return {ano:ano, mes:mes, chave: ano + '-' + mes};
+  }
   function initials(nome){
     var parts = nome.trim().split(/\s+/);
     var s = parts[0] ? parts[0][0] : "?";
@@ -949,6 +979,9 @@
   var elStats = document.getElementById('stats');
   var elList = document.getElementById('list');
   var elHistoryList = document.getElementById('historyList');
+  elStats.addEventListener('click', function(e){
+    if(e.target.closest('#statTotalVendido') || e.target.closest('#statRecebido')) abrirHistoricoMensal();
+  });
 
   function render(){
     renderStats();
@@ -961,19 +994,60 @@
   }
 
   function renderStats(){
-    var totalVendido = 0, totalPago = 0, totalPendente = 0, totalItens = 0;
+    var agora = new Date();
+    var mesAtual = agora.getMonth(), anoAtual = agora.getFullYear();
+    var totalVendidoMes = 0, totalPagoMes = 0, totalPendente = 0, totalItens = 0;
     state.compras.forEach(function(p){
       var v = calcValorCompra(p);
-      totalVendido += v;
-      if(p.pago) totalPago += v; else totalPendente += v;
+      var ma = mesAnoDaCompra(p);
+      if(ma && ma.ano === anoAtual && ma.mes === mesAtual){
+        totalVendidoMes += v;
+        if(p.pago) totalPagoMes += v;
+      }
+      if(!p.pago) totalPendente += v;
       p.itens.forEach(function(it){ totalItens += (it.quantidade||0); });
     });
     elStats.innerHTML =
-      '<div class="stat-tile wide blue"><div><div class="label">Total vendido</div><div class="value">'+fmtBRL(totalVendido)+'</div></div><div style="font-size:26px;">💰</div></div>' +
-      '<div class="stat-tile good"><div class="label">Recebido</div><div class="value">'+fmtBRL(totalPago)+'</div></div>' +
+      '<div class="stat-tile wide blue clicavel" id="statTotalVendido"><div><div class="label">Total vendido (mês)</div><div class="value">'+fmtBRL(totalVendidoMes)+'</div></div><div style="font-size:26px;">💰</div></div>' +
+      '<div class="stat-tile good clicavel" id="statRecebido"><div class="label">Recebido (mês)</div><div class="value">'+fmtBRL(totalPagoMes)+'</div></div>' +
       '<div class="stat-tile warn"><div class="label">A receber</div><div class="value">'+fmtBRL(totalPendente)+'</div></div>' +
       '<div class="stat-tile wide"><div class="label">Itens vendidos</div><div class="value">'+totalItens+'</div></div>';
   }
+
+  function abrirHistoricoMensal(){
+    renderHistoricoMensal();
+    document.getElementById('modalHistoricoMensal').classList.remove('hidden');
+  }
+  function renderHistoricoMensal(){
+    var porMes = {};
+    state.compras.forEach(function(p){
+      var ma = mesAnoDaCompra(p);
+      if(!ma) return;
+      var v = calcValorCompra(p);
+      if(!porMes[ma.chave]) porMes[ma.chave] = {ano:ma.ano, mes:ma.mes, vendido:0, recebido:0};
+      porMes[ma.chave].vendido += v;
+      if(p.pago) porMes[ma.chave].recebido += v;
+    });
+    var meses = Object.keys(porMes).map(function(k){ return porMes[k]; });
+    meses.sort(function(a,b){ return (b.ano*12+b.mes) - (a.ano*12+a.mes); });
+    var el = document.getElementById('listaHistoricoMensal');
+    if(meses.length === 0){
+      el.innerHTML = '<div class="hint">Nenhuma venda registrada ainda.</div>';
+      return;
+    }
+    var linhas = ['<div class="historico-mensal-row header"><div>Mês</div><div>Vendido</div><div>Recebido</div></div>'];
+    meses.forEach(function(m){
+      linhas.push(
+        '<div class="historico-mensal-row"><div class="mes">'+fmtMesAno(m.ano,m.mes)+'</div>'+
+        '<div class="v-vendido">'+fmtBRL(m.vendido)+'</div>'+
+        '<div class="v-recebido">'+fmtBRL(m.recebido)+'</div></div>'
+      );
+    });
+    el.innerHTML = linhas.join('');
+  }
+  document.getElementById('btnFecharHistoricoMensal').addEventListener('click', function(){
+    document.getElementById('modalHistoricoMensal').classList.add('hidden');
+  });
 
   function renderList(){
     var items = state.compradores.map(function(c){
